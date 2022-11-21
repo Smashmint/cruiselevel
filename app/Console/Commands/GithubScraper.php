@@ -30,9 +30,9 @@ class GithubScraper extends Command
      */
     public function handle()
     {
-        $count = 120;
+        $count = 66;
 
-        Cache::put('url', 'https://github.com/tailwindlabs/tailwindcss/network/dependents?dependents_after=MjQ1ODQ5OTkzNjM');
+        Cache::put('url', 'https://github.com/tailwindlabs/tailwindcss/network/dependents?dependents_after=MjQ1Nzg2NTM0ODY');
 
         while ($count <= 120) {
 
@@ -49,7 +49,7 @@ class GithubScraper extends Command
 
                 foreach($response->username as $username) {
                     
-                    Storage::append('tailwind.txt', $username);
+                    Storage::append('tailwind2.txt', $username);
                 }
 
                 Cache::put('url', $response->nextpage);
