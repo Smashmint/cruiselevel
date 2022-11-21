@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Scrape;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
@@ -20,7 +21,9 @@ class LinkedinScraper extends Command
      *
      * @var string
      */
-    protected $signature = 'linkedin:scrape {--url= : LinkedIn search url} {-- cookie= : LinkedIn session cookie}';
+    protected $signature = 'linkedin:scrape {--url= : LinkedIn search url} 
+                                            {--cookie= : LinkedIn session cookie} 
+                                            {--page= : The page to start at}';
 
     /**
      * The console command description.
@@ -42,7 +45,7 @@ class LinkedinScraper extends Command
 
     public function getHandle(string $url)
     {   
-        return Str::between(urldecode($url), '"', '"');
+        return Str::betweenFirst(urldecode($url), '"', '"');
     }
 
     /**
@@ -52,23 +55,30 @@ class LinkedinScraper extends Command
      */
     public function handle()
     {
+        $scrape = Scrape::findOrFail(1);
+
         $url = $this->option('url');
         $cookie = 'li_at='.$this->option('cookie');
 
         $i = 0;
         $count = 0;
         $scrape_count = 0;
-        $page_count = 1;
+        $page_count = $scrape->page;
 
         $profiles = [];
         $urls = collect([]);
 
-        Cache::put('url', $url);
         Cache::put('source_url', $url);
 
         $file = Excel::toArray(new ProfileImport, $this->getHandle($url).'.csv');
 
         //dd($this->searchProfile($rows, 'https://www.linkedin.com/in/yuhenobi'));
+
+        if($page_count == 1) {
+            Cache::put('url', $url);
+        } else {
+            Cache::put('url', $url.'&page='.$page_count);
+        }
 
         if(!empty($file[0])) {
 
@@ -82,7 +92,7 @@ class LinkedinScraper extends Command
             $first_run = true;
         }
         
-        while ($count <= 15) {
+        while ($count <= 50 && $page_count <= 100) {
 
             $request = Http::retry(1, 100)->timeout(90)->get('https://app.scrapingbee.com/api/v1/', [
                 'api_key' => 'PUXYD73NERX8EB9DGQ6AA12MCSO323EQFX92SRYRF0VRAVL8WJVAVHQPSXJFVQ0XQ96A2S1CIM41ST5K',
@@ -97,44 +107,60 @@ class LinkedinScraper extends Command
             
             if($request->successful()) {
 
-                foreach($response->profiles as $profile) {
-                    
-                    // only process profile urls from scrape
-                    if(Str::contains($profile, ['miniProfileUrn'])) {
+                // scraping empty 
+                if(count($response->profiles) > 0) {
 
-                        // don't check for ducplicate profiles on first run
-                        if(!$first_run) {
-                            // check if profile is duplicate
-                            if(!$urls->contains(Str::before($profile, '?'))) {
+                    // loop through profiles
+                    foreach($response->profiles as $profile) {
+                        
+                        // only process profile urls from scrape
+                        if(Str::contains($profile, ['miniProfileUrn'])) {
+
+                            // don't check for ducplicate profiles on first run
+                            if(!$first_run) {
+                                // check if profile is duplicate
+                                if(!$urls->contains(Str::before($profile, '?'))) {
+                                    $profiles = Arr::add($profiles, $i, ['url' => Str::before($profile, '?'), 'date' => Carbon::now()->toDateTimeString()]);
+            
+                                }else {
+                                    $this->info('duplicate profile!');
+                                }
+
+                            } else {
                                 $profiles = Arr::add($profiles, $i, ['url' => Str::before($profile, '?'), 'date' => Carbon::now()->toDateTimeString()]);
-        
-                            }else {
-                                $this->info('duplicate profile!');
                             }
 
-                        } else {
-                            $profiles = Arr::add($profiles, $i, ['url' => Str::before($profile, '?'), 'date' => Carbon::now()->toDateTimeString()]);
+                            $scrape_count++;
+
+                            $i++;
                         }
-
-                        $scrape_count++;
-
-                        $i++;
                     }
+
+                    $count++;
+
+                    $this->info('scraped '.count($response->profiles).' profiles from page '.$count.' - '.Cache::get('url'));
+                    $this->info('total profiles: '.$scrape_count);
+
+                    $page_count++;
+
+                    Cache::put('url', Cache::get('source_url').'&page='.$page_count);
+
+                    sleep(30);
+                } else {
+
+                    $resuming_at = Carbon::now()->addMinutes(15);
+
+                    $this->info('empty page detected.. stopping scrape - '.Cache::get('url'));
+                    $this->info('resuming scrape at '.$resuming_at->toDateTimeString());
+
+                    $scrape->page = $page_count;
+                    $scrape->resume_at = $resuming_at;
+                    $scrape->save();
+
+                    break;
                 }
-                
-                $count++;
-
-                $this->info('scraped '.count($response->profiles).' profiles from page '.$count.' - '.Cache::get('url'));
-                $this->info('total profiles: '.$scrape_count);
-
-                $page_count++;
-
-                Cache::put('url', Cache::get('source_url').'&page='.$page_count);
-
-                sleep(30);
 
             } else {
-                dd($response);
                 $this->error($response->message);
 
                 break;
@@ -147,6 +173,8 @@ class LinkedinScraper extends Command
         } else {
             $mergedProfiles = $profiles;
         }
+
+        $this->info('saving profiles to '.$this->getHandle($url).'.csv');
 
         Excel::store(new ProfilesExport($mergedProfiles), $this->getHandle($url).'.csv');
     }
